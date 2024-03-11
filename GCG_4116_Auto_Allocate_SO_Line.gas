@@ -1,0 +1,1050 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Variable.UDT.uAllocate.Define("Lot",String)
+Variable.UDT.uAllocate.Define("Bin",String)
+Variable.UDT.uAllocate.Define("Heat",String)
+Variable.UDT.uAllocate.Define("Serial",String)
+Variable.UDT.uAllocate.Define("Part",String)
+Variable.UDT.uAllocate.Define("Loc",String)
+Variable.UDT.uAllocate.Define("Qty_Needed",Float)
+Variable.UDT.uAllocate.Define("Qty_To_Allocate",Float)
+Variable.UDT.uAllocate.Define("Qty_Available",Float)
+Variable.UDT.uAllocate.Define("Order_No",String)
+Variable.UDT.uAllocate.Define("Order_Line",String)
+Variable.UDT.uAllocate.Define("Order_Qty",Float)
+Variable.UDT.uAllocate.Define("Seq",Long)
+Variable.uGlobal.uAllocate.Declare("uAllocate")
+Variable.UDT.uPart_Lot.Define("Part",String,Part)
+Variable.UDT.uPart_Lot.Define("Lot",String,Lot)
+Variable.UDT.uPart_Lot.Define("Bin",String,Bin)
+Variable.UDT.uPart_Lot.Define("Heat",String,Heat)
+Variable.UDT.uPart_Lot.Define("Serial",String,Serial_Number)
+Variable.UDT.uPart_Lot.Define("Quantity",Float,Quantity)
+Variable.UDT.uPart_Lot.Define("Date_Rec",Date,Date_Last_Rec)
+Variable.UDT.uPart_Lot.Define("Loc",String,Location)
+Variable.uGlobal.uPart_Lot.Declare("uPart_Lot")
+Variable.UDT.uOrders.Define("Order_NO",String,Order_No)
+Variable.UDT.uOrders.Define("Order_Line",String,Record_NO)
+Variable.UDT.uOrders.Define("Part",String,Part)
+Variable.UDT.uOrders.Define("Qty_Order",Float,Qty_BO)
+Variable.UDT.uOrders.Define("Date_Prom",Date,Date_Item_Prom)
+Variable.UDT.uOrders.Define("Loc",String,Location)
+Variable.uGlobal.uOrders.Declare("uOrders")
+Variable.UDT.uParts.Define("Part",String)
+Variable.UDT.uParts.Define("Loc",String)
+Variable.UDT.uParts.Define("Qty_Needed",Float)
+Variable.UDT.uParts.Define("BOM_Parent",String)
+Variable.uGlobal.uParts.Declare("uParts")
+Variable.Global.sRunFlag.Declare(String)
+Variable.Global.bOpt.Declare(Boolean,False)
+Variable.Global.bReAll.Declare(Boolean,False)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Quote 5152
+'Auto Allocate Parts at Sales Order Line Save
+'01/30/2014
+
+'Description:
+'A GAB script will be attached to the Save Order Lines hook that will be used to allocate,
+'using a wrapped INV060 Program, the selected part, or if Part is a BOM, the parent and  Level 1 Component parts of the BOM.
+'
+'For use only with Order Entry Lines Short Form.
+'Screen: OES0201F, Program: ORD201.
+'Accessed through: Order Entry>File>Sales Orders>Open,New>Lines
+'**Note: This quote  AND PROGRAM uses the Order Entry Short Form Lines screen**
+
+'NOTE:
+'This program has to be added to the online update flag, as the WIp to FG being done at time of jobs process does not carry over to item master immedietely, it carries over
+'once online update has been run. We have to write to a table, then look at that table once online update is run.
+
+'INV060willbewrappedandmadecallablebyGABtoAllocatePartstotheSalesOrder.
+
+'HookstoUse:
+'12510-Pre-SaveOrderLinesHook
+'12511-Post-SaveOrderLinesHook
+'15880:GUIProcessJobhook.
+'38130 : Online Update Post process hook
+
+'PassedID's
+'Order-Num:000005
+'Qty-Ordered:000001
+'PartNumber:000071
+'PartRev:000072
+'PartLocation:000074
+
+'Mods for Quote 5810
+'Add in delete of using this or unacllocation.
+'unallocation uses wrapper 7101 and allows for the params.
+'we have an action flag of p to unallocate.
+
+
+
+
+
+
+V.uGlobal.uAllocate.Redim(-1,-1)
+V.uGlobal.uPart_Lot.Redim(-1,-1)
+V.uGlobal.uOrders.Redim(-1,-1)
+V.uGlobal.uParts.Redim(-1,-1)
+V.Local.bE.Declare(Boolean)
+
+
+'Function.Intrinsic.Debug.BenchmarkModeEnable
+
+F.Global.General.ReadOption("401724",0,False,V.Global.bOpt)
+
+'open connection to database
+F.ODBC.Connection!conX.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+''Pre-Save Order Lines Hook, don't know if we need that?
+F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+	'pre save hook on order entry lines, short form
+	F.Intrinsic.Control.Case("12510")
+	'pose save hook on order entry lines, short form
+	F.Intrinsic.Control.Case("12511")
+		V.Global.sRunFlag.Set("ORD")
+'		F.Intrinsic.UI.InvokeWaitDialog("Allocating to Order...")
+		F.Intrinsic.Control.CallSub(Oe_save_run)
+	F.Intrinsic.Control.Case("12522")
+		'post delete hook, we are moding out to delete.
+		V.Global.sRunFlag.Set("ORD")
+		F.Intrinsic.UI.InvokeWaitDialog("Deleting Allocations...")
+		F.Intrinsic.Control.CallSub(Oe_delete_run)
+	'GUI Process Button hook when WIP'ing goods
+	F.Intrinsic.Control.Case("15880")
+		'running on the GUI, so we have to do a little bit more.
+		'make sure our custom table is found
+		F.ODBC.Connection!conX.TableExists("GCG_4116_WIPAllocate",V.Local.bE)
+		F.Intrinsic.Control.If(V.Local.bE,=,True)
+			F.Intrinsic.Control.CallSub(Wip_process_run)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.Debug.SetLA("GCG_4116_WIPAllocate custom table not found")
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Case("38130")
+		'items updated since last pass flag, only want to do it if its one or more., and if the WIP to fg flag is >0
+		F.Intrinsic.Control.If(V.Passed.000005,>=,1)
+		F.Intrinsic.Control.AndIf(V.Passed.000010,>=,1)
+			V.global.sRunFlag.Set("ONLINE")
+			'Online Update Flag. Have to do this when doing from GUI
+			F.Intrinsic.UI.InvokeWaitDialog("Allocating to Orders...")
+			F.Intrinsic.Control.CallSub(Online_update)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Case("11880")
+		'delete hook on the order.
+'		F.Intrinsic.Debug.ShowCallerInfo	
+		V.Global.sRunFlag.Set("ORD")
+		F.Intrinsic.Debug.SetLA("Deleting all alocations for an order")
+		F.Intrinsic.Control.CallSub(Oe_header_delete)
+	'dont do anything
+	F.Intrinsic.Control.CaseElse
+		F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndSelect
+
+Program.Sub.Main.End
+
+Program.Sub.Get_Order_Info.Start
+ F.Intrinsic.Control.SetErrorHandler("Get_Order_Info_Err")
+F.Intrinsic.Control.ClearErrors
+
+'we have to look for any order lines that contain our part info that we are wip'ing to fg'ing
+'aslo being called from order lines order run as well due to new circumstances.
+
+V.Local.sError.Declare(String)
+V.Local.sQuery.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sLoc.Declare(String)
+V.Local.fQty.Declare(Float)
+V.Local.iC.Declare(Long)
+V.Local.iUB.Declare(Long)
+V.Local.iNewUB.Declare(Long)
+V.Local.sOrder.Declare(String)
+V.Local.sOrderLine.Declare(String)
+
+V.Local.iUB.Set(V.uGlobal.uParts.UBound)
+
+'determine if we have any order lines with that part we are wip'ing
+F.Intrinsic.Control.For(V.Local.iC,0,V.local.iUB,1)
+	'query our order infor the for the particular part we are on. Also we are using Qty_BO cause that shouldbe (order-shipped quantity)
+	F.Intrinsic.Control.If(V.Global.sRunFlag,=,"ONLINE")
+		F.Intrinsic.String.Concat("Select Part,Location,Order_No,Record_NO,Qty_BO,Date_Item_Prom  From V_Order_Lines Where Part = '",V.uGlobal.uParts(v.Local.iC)!Part,"' And Location = '",V.uglobal.uParts(v.local.iC)!Loc,"' Order BY Date_Item_Prom",V.Local.sQuery)
+	F.Intrinsic.Control.Elseif(V.Global.sRunFlag,=,"ORD")
+
+
+
+		V.Local.sOrder.Set(V.Passed.000005)
+		V.Local.sOrderLine.Set(V.Passed.000013)
+		F.Intrinsic.Math.Mult(V.Local.sOrderLine.Long,10,V.Local.sOrderLine.long)
+		F.Intrinsic.String.LPad(V.Local.sOrder,0,7,V.Local.sOrder)
+		F.Intrinsic.String.LPad(V.Local.sOrderLine,0,4,V.Local.sOrderLine)
+		F.Intrinsic.Control.If(V.uGlobal.uParts(v.Local.iC)!BOM_Parent.Trim,<>,"")
+			F.Intrinsic.String.Concat("Select Part,Location,Order_No,Record_NO,Qty_BO,Date_Item_Prom  From V_Order_Lines Where Part = '",V.uGlobal.uParts(v.Local.iC)!Part,"' And Location = '",V.uglobal.uParts(v.local.iC)!Loc,"' And Order_No ='",V.local.sOrder,"' Order BY Date_Item_Prom",V.Local.sQuery)
+		F.Intrinsic.Control.Else
+			F.Intrinsic.String.Concat("Select Part,Location,Order_No,Record_NO,Qty_BO,Date_Item_Prom  From V_Order_Lines Where Part = '",V.uGlobal.uParts(v.Local.iC)!Part,"' And Location = '",V.uglobal.uParts(v.local.iC)!Loc,"' And Order_No ='",V.local.sOrder,"' And Record_NO = '",V.local.sOrderLine,"' Order BY Date_Item_Prom",V.Local.sQuery)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Debug.SetLA("RUN Flag was not either Online or Ord")
+		F.Intrinsic.Control.CallSub(Unload)
+	F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sQuery)
+	F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+		'store into our order udt
+		F.Intrinsic.Math.Add(V.uGlobal.uOrders.UBound,1,V.Local.iNewUB)
+		F.Intrinsic.Control.If(V.Local.iNewUB,=,0)
+			V.uGlobal.uOrders.Redim(0,0)
+		F.Intrinsic.Control.Else
+			V.uGlobal.uOrders.RedimPreserve(0,V.Local.iNewUB)
+		F.Intrinsic.Control.EndIf
+		V.uGlobal.uOrders(v.Local.iNewUB)!Order_NO.Set(V.ODBC.conX!rst.FieldValTrim!ORder_NO)
+		V.uGlobal.uOrders(v.Local.iNewUB)!Order_Line.Set(V.ODBC.conX!rst.FieldValTrim!Record_NO)
+		V.uGlobal.uOrders(v.Local.iNewUB)!Qty_order.Set(V.ODBC.conX!rst.FieldValTrim!Qty_BO)
+		V.uGlobal.uOrders(v.Local.iNewUB)!Part.Set(V.ODBC.conX!rst.FieldValTrim!Part)
+		V.uGlobal.uOrders(v.Local.iNewUB)!Loc.Set(V.ODBC.conX!rst.FieldValTrim!Location)
+		V.uGlobal.uOrders(v.Local.iNewUB)!Date_Prom.Set(V.ODBC.conX!rst.FieldValTrim!Date_Item_Prom)
+		F.ODBC.conX!rst.MoveNext
+	F.Intrinsic.Control.Loop
+	F.ODBC.conX!rst.Close
+F.Intrinsic.Control.Next(V.Local.iC)
+
+'we are going to order by order no order line order date promise
+F.Intrinsic.Variable.UDTMultiQuickSort(V.uGlobal.uOrders!Date_Prom,0,V.uGlobal.uOrders!Order_NO,0,V.uGlobal.uOrders!Order_Line,0)
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Get_Order_Info_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+
+Program.Sub.Get_Order_Info.End
+
+Program.Sub.Check_BOM.Start
+F.Intrinsic.Control.SetErrorHandler("Check_BOM_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.local.iOrigUB.Declare(Long)
+V.Local.iNewUB.Declare(Long)
+V.Local.iC.Declare(Long)
+V.Local.iO.Declare(Long)
+V.Local.sOrd.Declare(String)
+
+V.Local.fQtyNeeded.Declare(Float)
+V.Local.sQuery.Declare(String)
+V.Local.sQuery1.Declare(String)
+
+'set our finite ubound before we start adding to it.
+V.Local.iOrigUB.Set(V.uGlobal.uParts.UBound)
+
+F.Intrinsic.Control.For(V.Local.iC,0,V.Local.iOrigUB,1)
+	F.Intrinsic.String.Concat("Select Part,Quantity From BOM_MSTR Where Sequence_BOM>'0000' And Parent='",V.uglobal.uParts(v.local.ic)!Part,"' Order By Sequence_BOM",V.local.sQuery)
+	'have to check our inventory flag flag_bom becuase if thats B and the bOpt is true(Explode that Bom) we are going to not allocated to the parent, but to it's component that should be on the order
+	F.Intrinsic.String.Concat("Select UCase(Code_Bom) as Code_Bom From V_Inventory_Mstr Where Part = '",V.uglobal.uParts(v.Local.iC)!Part,"'",V.Local.sQuery1)
+	F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sQuery)
+	F.ODBC.Connection!conX.OpenLocalRecordsetRO("rstInv",V.Local.sQuery1)
+	F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+		'just in case eof for rstInv is ever going to be True we want to not check for that.
+		F.Intrinsic.Control.If(V.ODBC.conX!rstInv.EOF,<>,True)
+			F.Intrinsic.Control.If(V.Global.bOpt,=,True,"AND",V.ODBC.conX!rstInv.FieldValTrim!Code_BOM,=,"B")
+				'we know that exploded bom is turned on and we know that since this is turned on we are only allocating the component parts and not the BOM parent. and the flag part from inventory is B so thats the indicator.
+				'if neither of these conditions are true we are not going to flag this for removal, and it should still try to allocate the parent part .
+				'according to information given to me by Molly E. and Cindy W. conversing together... when this script was in testing
+				F.Intrinsic.Variable.udtFlagOrdinal(V.uGlobal.uParts,True,V.Local.iC)
+			F.Intrinsic.Control.Else
+				'exit our do, becuase this part will not have lines to allocate to it for it's children from the orders BECAUSE OXPLODED BOM IS NOT ON OR THE FLAG IS NOT B FOR THIS PARENT.
+				F.Intrinsic.Control.ExitDo
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.Else
+			F.Intrinsic.Control.If(V.Global.bOpt,=,True)
+				F.Intrinsic.Variable.udtFlagOrdinal(V.uGlobal.uParts,True,V.Local.iC)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.Control.ExitDo
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+		'ADD INFORMATION TO our parts UDT	
+		F.Intrinsic.Math.Add(V.uGlobal.uParts.UBound,1,V.Local.iNewUB)
+		V.uGlobal.uParts.RedimPreserve(0,V.Local.iNewUB)
+		V.uGlobal.uParts(v.Local.iNewUB)!Part.Set(V.ODBC.conX!rst.FieldValTrim!Part)
+		'qty cant be stored this way, we have to calc it in the Allocation sub when we are going against orders, if the part we are not on is not a parent the qty will be the BOM quantity stored here
+		'multiplied by the order qty from the order we are on. cause in the wip processing we may have multiple orders for one part.		
+		V.uGlobal.uParts(v.Local.iNewUB)!Qty_Needed.Set(V.odbc.conX!rst.FieldValFloat!Quantity)
+		'our parent udt field will be used when pulling in to the orders, when we are adding bom comps.. to
+		V.uGlobal.uParts(v.Local.iNewUB)!BOM_Parent.Set(V.uGlobal.uParts(v.Local.iC)!Part)
+		F.ODBC.conX!rst.MoveNext
+	F.Intrinsic.Control.Loop
+F.ODBC.conX!rst.Close
+F.ODBC.conX!rstInv.Close
+F.Intrinsic.Control.Next(V.Local.iC)
+
+
+'delete them flagged ordinals
+F.Intrinsic.Variable.UDTDeleteFlagged(V.uGlobal.uParts)
+'
+''if we know that we have the option on we have to get order info again to get the line information based on our returned parts only
+'F.Intrinsic.Control.CallSub(Get_order_info)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Check_BOM_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+
+
+Program.Sub.Check_BOM.End
+
+Program.Sub.Get_Lot.Start
+F.Intrinsic.Control.SetErrorHandler("Get_Lot_Err")
+F.Intrinsic.Control.ClearErrors
+
+
+'have to get the lot information for all parts
+V.Local.sError.Declare(String)
+V.Local.sQuery.Declare(String)
+V.Local.iC.Declare(Long)
+V.Local.iUb.Declare(Long)
+V.Local.fQty.Declare(Float)
+'
+'
+'
+
+
+F.Intrinsic.Control.For(V.Local.iC,0,V.uGlobal.uParts.UBound,1)
+	'check and see if this part is flagged as lot bin
+	F.Intrinsic.string.Concat("Select Flag_Lot , Qty_Onhand From V_Inventory_MSTR Where Part = '",V.uGlobal.uParts(v.Local.iC)!Part,"' And Location ='",V.uglobal.uParts(v.local.ic)!loc,"'",V.Local.sQuery)
+	F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sQuery)
+	F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+		'see if the value is Y
+		F.Intrinsic.Control.If(V.ODBC.conX!rst.FieldValTrim!Flag_Lot,=,"Y")
+			'we know its a lot bin part
+			'so query Item History table looking for lot,bin,heat,serial,qty
+			'alright, item master also stores any allocations...., so what we have to do is query the part for information that does not have allocations, Allocated flag is <> Y
+			F.Intrinsic.String.Build("Select Part,Location,Lot, Bin, Heat,Serial_Number,Date_Last_Rec,Quantity  From V_Item_Master Where Part = '{0}' And Location = '{1}' And Allocated <> '{2}' And Quantity > '0' Order By Date_Last_Rec",V.uGlobal.uParts(v.local.iC)!Part,V.uglobal.uParts(v.local.ic)!Loc,"Y",V.Local.sQuery)
+			F.ODBC.Connection!conX.OpenLocalRecordsetRO("rstLot",V.Local.sQuery)
+			F.Intrinsic.Control.If(V.ODBC.conX!rstLot.EOF,<>,True)
+				F.Intrinsic.Variable.LoadUDTFromRecordset("conx","rstLot","v.uglobal.uPart_Lot",True)
+			F.Intrinsic.Control.EndIf
+			F.ODBC.conX!rstLot.Close
+		F.Intrinsic.Control.Else
+			F.Intrinsic.Debug.SetLA(V.uGlobal.uParts(v.Local.iC)!Part)
+			F.Intrinsic.Debug.SetLA("NO LOT BIN RECORDS EXIST FOR THIS PART, FLAG LOT BIN NOT MARKED AS Y ON PART")
+		F.Intrinsic.Control.Endif
+	F.Intrinsic.Control.EndIf
+	F.ODBC.conX!rst.Close
+F.Intrinsic.Control.Next(V.Local.iC)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Get_Lot_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+
+Program.Sub.Get_Lot.End
+
+Program.Sub.OE_Save_Run.Start
+F.Intrinsic.Control.SetErrorHandler("OE_Save_Run_Err")
+F.Intrinsic.Control.ClearErrors
+
+'This sub we are going to get information from the order,
+'then check and see if it's a bom, to add to this udt
+'then check into the lot information to get the stuff we need there
+'then allocate what we can.
+V.Local.sError.Declare(String)
+V.Local.sOrder.Declare(String)
+V.Local.sOrderLine.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sLoc.Declare(String)
+V.Local.dDate_Due.Declare(Date)
+V.Local.fOrderQty.Declare(Float)
+V.Local.sQuery.Declare(String)
+V.Local.iUb.Declare(Long)
+
+'F.Intrinsic.Debug.DumpVariableList
+
+
+
+F.Intrinsic.Debug.SetLA("Coming from the Order Lines screen (**SHORT FORM**")
+
+'SET PART/rev combo
+F.Intrinsic.String.GSSPartString(V.Passed.000071,V.Passed.000072,V.Local.sPart)
+'if there location
+V.Local.sLoc.Set(V.Passed.000074)
+V.Local.sOrder.Set(V.Passed.000005)
+'F.Intrinsic.String.LPad(V.Local.sOrder,"0",7,V.Local.sOrder)
+V.Local.sOrderLine.Set(V.Passed.000013)
+'not going to format the order line just yet, as on reference we have to look at it with multiples of 10
+'so order line 1 is actually listed as 0010 (
+'one other way is just padded to 001 (Allocation)
+'F.Intrinsic.string.Lpad(V.Local.sOrder,"0",7,V.Local.sORder)
+'F.Intrinsic.string.Lpad(V.Local.sOrderLine.float,"0",3,V.Local.sOrderLine)
+'F.Intrinsic.String.Concat(V.Local.sOrderLine,"0",V.Local.sOrderLine)
+V.Local.fOrderQty.Set(V.Passed.000001)
+'
+'store this info into our udt.
+F.Intrinsic.Math.Add(V.uGlobal.uParts.UBound,1,V.Local.iUb)
+F.Intrinsic.Control.If(V.Local.iUb,=,0)
+	V.uGlobal.uParts.Redim(0,0)
+F.Intrinsic.Control.Else
+	V.uGlobal.uParts.RedimPreserve(0,V.Local.iUb)
+F.Intrinsic.Control.EndIf
+
+V.uGlobal.uParts(v.Local.iUb)!Part.Set(V.Local.sPart.Trim)
+V.uGlobal.uParts(v.Local.iUb)!Loc.Set(V.Local.sLoc.Trim)
+V.uGlobal.uParts(v.Local.iUb)!Qty_Needed.Set(V.Local.fOrderQty)
+'V.uGlobal.uParts(v.Local.iUb)!BOM_Parent.Set(V.Local.sPart.Trim)
+
+'now determine if this part we have here is a bom parent
+F.Intrinsic.Control.CallSub(Check_bom)
+
+'get order info?
+F.Intrinsic.Control.CallSub(Get_order_info)
+
+'check to get lots
+F.Intrinsic.Control.CallSub(Get_lot)
+
+'then call the Allocate sub
+F.Intrinsic.Control.CallSub(Allocate_parts)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("OE_Save_Run_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.OE_Save_Run.End
+
+Program.Sub.WIP_Process_Run.Start
+F.Intrinsic.Control.SetErrorHandler("WIP_Process_Run_Err")
+F.Intrinsic.Control.ClearErrors
+
+
+'grab part header information and write to our GCG_WIP_Allocate Flag
+'then we have to read that against online update.
+V.Local.sError.Declare(String)
+V.Local.sJob.Declare(String)
+V.Local.sQuery.Declare(String)
+V.Local.sTransOp.Declare(String)
+V.Local.sTransOp_0.Declare(String)
+V.Local.sTransOp_1.Declare(String)
+V.Local.sTransOp_2.Declare(String)
+V.local.iO.Declare(Long)
+V.Local.bWIP.Declare(Boolean)
+V.Local.sSeq.Declare(String)
+
+'first check and see if our transfer WIP to FG flag is checked on the screen
+F.Intrinsic.Debug.SetLA("Coming from Process button on GUI and WIP to FG is checked")
+'we need to check for a certain op code that the have entered in the string value of the option id 401116, set through SS>Manufacturing Standard Options
+
+'Tranfser WIP TO FG Any Completed to Pieces completed with op code
+F.global.General.ReadOption("401116",1,"",0001,V.Local.sTransOp_0)
+'Transfer and backflush at op-code(Includes misc seq)
+F.global.General.ReadOption("401116",1,"",0002,V.Local.sTransOp_1)
+''transer,backflush,and close the work order if estimate complete at op-code
+F.global.General.ReadOption("401116",1,"",0003,V.Local.sTransOp_2)
+
+V.Local.sJob.Set(V.Passed.000004)
+V.Local.sSeq.Set(V.Passed.000005)
+'got to pad that sequence number with zeroes
+F.Intrinsic.String.LPad(V.Local.sSeq,"0",6,V.Local.sSeq)
+'have to split up job by dash
+F.Intrinsic.String.Split(V.Local.sJob,"-",V.Local.sJob)
+'lets see if the sequence we are processing has the op code from sTrans op, then we continue.
+F.Intrinsic.Control.If(V.Local.sJob.UBound,>,0)
+	F.Intrinsic.String.Build("Select UCase(Operation) As Operation From Job_Operations Where Job = '{0}' And Suffix = '{1}' And Seq = '{2}' And LMO = '{3}'",V.Local.sJob(0),V.Local.sJob(1),V.local.sSeq,"L",V.Local.sQuery)
+F.Intrinsic.Control.Else
+	F.Intrinsic.String.Build("Select UCase(Operation)As Operation From Job_Operations Where Job = '{0}' And Suffix = '{1}' And Seq = '{2}' And LMO = '{3}'",V.Local.sJob(0),"",V.local.sSeq,"L",V.Local.sQuery)
+F.Intrinsic.Control.EndIf
+F.ODBC.Connection!conX.OpenLocalRecordsetRO("Rst",V.Local.sQuery)
+
+'store our op code value.
+F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+	V.Local.sTransOp.Set(V.ODBC.conX!rst.FieldValTrim!Operation)
+F.Intrinsic.Control.EndIf
+F.ODBC.conX!rst.Close
+
+F.Intrinsic.Control.If(V.Local.sTransOp.Trim,=,"")
+	F.Intrinsic.Debug.SetLA("This work order doesn't have an op code that we are looking for to catch")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.else
+	'check to make sure our op code matches either of the three options we have in our company options
+	'if it do we will process if not, we will fly away.
+	F.Intrinsic.Control.For(V.Local.iO,0,2,1)
+		f.Intrinsic.Control.If(V.Local.sTransOp,=,V.Local.sTransOp_[v.local.iO])
+			V.Local.bWIP.Set(True)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iO)
+F.Intrinsic.Control.EndIf
+
+
+F.Intrinsic.Control.If(V.Local.bWIP,=,True)
+	'we know now we have to continue process our information
+	'lets look for fg part on work order
+	F.Intrinsic.Control.If(V.Local.sJob.UBound,>,0)
+		'get fg part from job header info
+		F.Intrinsic.String.Build("Select Part,Location From V_Job_Header Where Job = '{0}' And Suffix = '{1}' ",V.Local.sJob(0),V.Local.sJob(1),V.Local.sQuery)
+	F.Intrinsic.Control.Else
+		'no suffix and no ubound of 1 on the job split
+		F.Intrinsic.String.Build("Select Part,Location From V_Job_Header Where Job = '{0}' And Suffix = '{1}' ",V.Local.sJob(0),"",V.Local.sQuery)
+	F.Intrinsic.Control.EndIf
+	F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sQuery)
+	F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+		'open our recordsettowr to the table.
+		F.Intrinsic.String.Concat("Select * From GCG_4116_WIPAllocate Where Part_Rev ='",V.ODBC.conX!rst.FieldValTrim!Part,"'",V.Local.sQuery)
+		'open up our records to the GCG_WIP_Allocate
+		'we know we will have part, order, and order line information as key...
+		F.ODBC.Connection!conX.OpenLocalRecordsetRW("rstWIP",V.Local.sQuery)
+		F.Intrinsic.Control.If(V.ODBC.conX!rstWIP.EOF,=,True)
+			F.ODBC.conX!rstWIP.AddNew
+			F.ODBC.conX!rstWIP.Set!Part_Rev(V.ODBC.conX!rst.FieldValTrim!Part)
+			F.ODBC.conX!rstWIP.Set!Location(V.ODBC.conX!rst.FieldValTrim!Location)
+		F.Intrinsic.Control.EndIf
+		'write the remaining records.' we know we have to allocate since this sub is occuring.
+		F.ODBC.conX!rstWIP.Set!Flag_Allocate(0)
+		F.ODBC.conX!rstWIP.Update
+		F.ODBC.conX!rstWIP.Close
+		F.ODBC.conX!rst.Close
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Else
+	F.Intrinsic.Debug.SetLA("bWip was not set to true against our operation we were on.")
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("WIP_Process_Run_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.WIP_Process_Run.End
+
+Program.Sub.Allocate_Parts.Start
+F.Intrinsic.Control.SetErrorHandler("Allocate_Parts_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.sQuery.Declare(String)
+V.Local.sParam.Declare(String)
+V.Local.iC.Declare(Long)
+V.Local.iR.Declare(Long)
+V.Local.sRet.Declare(String)
+V.Local.iUB.Declare(Long)
+V.Local.sOrd.Declare(String)
+V.Local.iO.Declare(Long)
+V.Local.fLotQty.Declare(Float)
+V.Local.fNeedQty.Declare(Float)
+V.Local.fAllocateQty.Declare(Float)
+V.Local.fTotalAllocateQty.Declare(Float)
+V.Local.sPart.Declare(String)
+V.Local.sRev.Declare(String)
+V.Local.sSerial.Declare(String)
+V.Local.sMessage.Declare(String)
+V.local.fOrdQty.Declare(Float)
+V.Local.bReAllocate.Declare(Boolean,False)
+
+
+
+'Map
+'Loop Through Orders
+' Then loop through our part on the order gainst the BOM_Parent to get the Part information, as we may or may not have multiple returns for parts that we need to allocate
+'  Then Loop through our Part Lot bin against our part from the bom_parent return from uParts
+'   then we are going to determine our part lot infor to allocatio
+  'end loop against returned part lots for part, we exit this when we find enough qty that we need.
+' end loop for the parts tied to a BOM_Parent???
+'endloop against our orders.
+'
+'
+
+
+'go through our parts UDT
+'for every lot we exhaust we are going to write a record to our uAllocate udt knowing that we want toa llocate that
+F.Intrinsic.Control.For(V.Local.iO,0,V.uGlobal.uOrders.UBound,1)
+	'First check and see if we have any qty already allocated to the Sales Order Item (Serial_number in item master is order-line, xxxxxx-xxx
+	F.Intrinsic.String.LPad(V.uGlobal.uOrders(v.Local.iO)!Order_NO,"0",7,V.uGlobal.uOrders(v.Local.iO)!Order_NO)
+	F.Intrinsic.String.LPad(V.uGlobal.uOrders(v.Local.iO)!Order_Line,"0",3,V.uGlobal.uOrders(v.Local.iO)!Order_Line)
+	F.Intrinsic.String.Build("{0}-{1}",V.uGlobal.uOrders(v.Local.iO)!Order_NO,V.uGlobal.uOrders(v.Local.iO)!Order_Line,V.Local.sSerial)
+	F.Intrinsic.Variable.UDTMultiSeek(V.uGlobal.uParts!Part,V.uGlobal.uOrders(V.Local.iO)!Part,V.uglobal.uParts!Loc,V.uglobal.uOrders(v.local.io)!loc,V.Local.sORD)
+	F.Intrinsic.Control.If(V.Local.sOrd.Trim,<>,"")
+		F.Intrinsic.string.Split(V.Local.sOrd,"*!*",V.Local.sOrd)
+		F.Intrinsic.Control.For(V.local.iC,0,V.local.sOrd.UBound,1)
+'			F.Intrinsic.Control.If(V.uGlobal.uParts(v.Local.sOrd(v.local.iC))!Part,=,V.uGlobal.uOrders(v.Local.iO)!Part)
+				'so we know if our part is a bom parent, we know that this qty is coming from the Order bo, had to do this for when coming from WIP Processing, an where it was stored, cause we didn't know our need qty at that time.
+			V.Local.fNeedQty.Set(V.uGlobal.uOrders(v.Local.iO)!Qty_Order)
+			'if need to later
+			V.local.fOrdQty.set(V.uGlobal.uOrders(v.Local.iO)!Qty_Order)
+
+'			F.Intrinsic.Control.Else
+				'hAVE TO multiply our qty on order, by the qty needed if this is a bom componenet
+'				F.Intrinsic.Math.Mult(V.uGlobal.uOrders(v.Local.iO)!Qty_Order,V.uGlobal.uParts(v.Local.sOrd(v.Local.ic))!Qty_Needed,V.Local.fNeedQty)
+'			F.Intrinsic.Control.EndIf
+			'reduce or need qty by quantity that may have already been allocated for this part and sales order line combo in item master.
+			F.Intrinsic.String.Build("Select Quantity From Item_Master Where Part = '{0}' And Serial_Number = '{1}' And Allocated = 'Y' ",V.uGlobal.uParts(V.Local.sOrd(v.Local.iC))!Part,V.Local.sSerial,V.Local.sQuery)
+			F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sQuery)
+			F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+				F.Intrinsic.Math.Sub(V.Local.fNeedQty,V.ODBC.conX!rst.FieldValFloat!Quantity,V.Local.fNeedQty)
+				F.ODBC.conX!rst.MoveNext
+			F.Intrinsic.Control.Loop
+			F.ODBC.conX!rst.Close
+			'check to make sure we still need qty for this item
+			F.Intrinsic.Control.If(V.Local.fNeedQty,>,0)
+				F.Intrinsic.Control.If(V.Global.bReAll,<>,True)
+					F.Intrinsic.UI.InvokeWaitDialog("Allocating to Order...")
+				F.Intrinsic.Control.endif
+				'now we need to get our lot information from the Part_Lot udt, we are going to sort first by the part, date last rec
+				F.Intrinsic.Variable.UDTMultiQuickSort(V.uGlobal.uPart_Lot!Part,0,V.uGlobal.uPart_Lot!Loc,0,V.uGlobal.uPart_Lot!Date_Rec,0)
+				F.Intrinsic.Variable.UDTMultiSeek(V.uGlobal.uPart_Lot!Part,V.uGlobal.uParts(v.local.sOrd(V.local.iC))!Part,V.uGlobal.uPart_Lot!Loc,V.uGlobal.uParts(v.local.sOrd(V.local.iC))!Loc,V.Local.sRet)
+				F.Intrinsic.Control.If(V.Local.sRet.Trim,<>,"")
+					F.Intrinsic.String.Split(V.Local.sRet,"*!*",V.Local.sRet)
+					F.Intrinsic.Control.For(V.Local.iR,0,V.Local.sRet.UBound,1)
+						'set our lot qty
+						V.Local.fLotQty.Set(V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Quantity)
+						F.Intrinsic.Control.If(V.Local.fLotQty,>,0)
+							F.Intrinsic.Control.If(V.Local.fNeedQty,>,V.Local.fLotQty)
+								F.Intrinsic.Math.Sub(V.Local.fNeedQty,V.Local.fLotQty,V.Local.fNeedQty)
+								'we know we are allocating this lot quantity
+								V.Local.fAllocateQty.Set(V.Local.fLotQty)
+								F.Intrinsic.Math.Add(V.Local.fTotalAllocateQty,V.Local.fLotQty,V.Local.fTotalAllocateQty)
+							F.Intrinsic.Control.Else
+								V.Local.fAllocateQty.Set(V.Local.fNeedQty)
+								V.Local.fNeedQty.Set(0)
+							F.Intrinsic.Control.EndIf
+							'we have to reduce our lot qty that we are allocating from the udt, so we don't have this total of lot bin info that never changes
+							F.Intrinsic.Math.Sub(V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Quantity,V.Local.fAllocateQty,V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Quantity)
+
+
+							'GRAB OUR LOT BIN INFOR FROM THE PART_LOT UDT'
+							F.Intrinsic.String.Build("{0}!*!{1}!*!{2}!*!{3}",V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Lot,V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Bin,V.uGlobal.uPart_Lot(v.Local.sRet(v.Local.iR))!Heat,V.uGlobal.uPart_Lot(v.local.sRet(v.local.iR))!Serial,V.Local.sParam)
+							'FORMAT OUR PART TEXT, INTO PART, AND REV, OR BLANK REV.
+							F.Intrinsic.String.RPad(V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part," ",20,V.uGlobal.uparts(v.Local.sOrd(v.Local.iC))!Part)
+							F.Intrinsic.String.Left(V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part,17,V.Local.sPart)
+'							F.Intrinsic.String.RPad(V.local.sPart.Trim," ",17,V.Local.sPart)
+							F.Intrinsic.String.Right(V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part,3,V.Local.sRev)
+							F.Intrinsic.String.RPad(V.Local.sRev.Trim," ",3,V.Local.sRev)
+'							'BUILD OUR PARAM STRING, 		
+							' Type=R FOR SCREENLESS 1) Part 2) Rev 3) Locn 4) Qty 5) Order 6) Order Line 7) Lot 8) Bin 9) Heat 10) Serial
+							F.Intrinsic.String.Build("{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}","R",V.Local.sPart,V.Local.sRev,V.uGlobal.uParts(V.Local.sOrd(V.Local.iC))!Loc,V.Local.fAllocateQty,V.uGlobal.uOrders(v.Local.iO)!Order_NO,V.uGlobal.uOrders(v.Local.iO)!Order_Line,V.Local.sParam,V.Local.sParam)
+'							F.Intrinsic.UI.Msgbox(V.Local.sParam)
+'							F.Intrinsic.Debug.CallWrapperDebugEnable
+							'whether or not we are on GUI online update or Order screen.
+							F.Intrinsic.Debug.SetLA("Params",V.Local.sParam)
+'							F.Intrinsic.Debug.ToggleOutputListing
+'							F.Intrinsic.Debug.DumpVariableList
+							F.Global.General.CallWrapperSync(7100,V.Local.sParam)
+
+'							F.Global.General.CallWrapperSync(7101,V.Local.sParam)
+
+							'if we no longe need any more qty to be allocated exit our for going through lot bin records
+							F.Intrinsic.Control.If(V.Local.fNeedQty,<=,0)
+								F.Intrinsic.Control.ExitFor(V.Local.iR)
+							F.Intrinsic.Control.EndIf
+						F.Intrinsic.Control.EndIf
+					F.Intrinsic.Control.Next(V.Local.iR)
+'					Function.Intrinsic.Control.If(V.global.sRunFlag,=,"ORD")
+'						F.Intrinsic.Control.If(V.Local.fNeedQty,>,0)
+'							F.Intrinsic.Control.If(V.Local.fAllocateQty,>,0)
+'								'WE KNOW WE HAVE TO SAY OH NO, WE DONT HAVE ENOUGH QTY FOR FULL ALLOCATION, since we have exhausted all our lots at this point.
+''								F.Intrinsic.String.Concat("Only Quantity of ",V.Local.fTotalAllocateQty," has been allocated for Part: ",V.uglobal.uParts(v.local.sOrd(v.local.iC))!Part,V.Local.sMessage)
+''								F.Intrinsic.UI.Msgbox(V.Local.sMessage," Allocation Notice",32)
+'							F.Intrinsic.Control.Else
+'								'we need to say here, wait we have a need qty, but our available allocate qty was zero...
+''								F.Intrinsic.String.Concat("No available quantity for Part: ",V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part,V.Local.sMessage)
+''								F.Intrinsic.UI.Msgbox(V.Local.sMessage,"No Parts Allocated",32)
+'							F.Intrinsic.Control.EndIf
+'						F.Intrinsic.Control.EndIf
+'					F.Intrinsic.Control.EndIf
+				F.Intrinsic.Control.Else
+					'Qty not available for allocation
+'					Function.Intrinsic.Control.If(V.global.sRunFlag,=,"ORD")
+'						F.Intrinsic.String.Concat("No available quantity for Part: ",V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part,V.Local.sMessage)
+'						F.Intrinsic.UI.Msgbox(V.Local.sMessage,"No Parts Allocated",32)
+'					F.Intrinsic.Control.EndIf
+				F.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.ElseIf(V.Local.fNeedQty,<,0)
+				'Qty not available orallocation
+					'need qty is negative, so we must unallocate. They changed the order qty on the screen. or maybe hit delete button.
+					F.Intrinsic.Control.If(V.global.sRunFlag,=,"ORD")
+						V.Local.bReAllocate.Set(True)
+						F.Intrinsic.UI.InvokeWaitDialog("Unallocating Items from Order...")
+						F.Intrinsic.Debug.SetLA("Re Allocation is needed For Part :",V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part)
+						F.Intrinsic.Control.CallSub(Unallocate,"Position",V.local.sOrd(v.local.ic),"Qty",V.Local.fOrdQty,"Serial",V.local.sSerial)
+					F.Intrinsic.Control.EndIf
+'				Function.Intrinsic.Control.If(V.global.sRunFlag,=,"ORD")
+'					F.Intrinsic.String.Concat("Part : ",V.uGlobal.uParts(v.Local.sOrd(v.Local.iC))!Part," has already been allocated fully.",V.Local.sMessage)
+'					F.Intrinsic.UI.Msgbox(V.Local.sMessage,"Full Allocation exists...",64)
+'				F.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.Next(V.Local.iC)
+	F.Intrinsic.Control.EndIf
+V.Local.fTotalAllocateQty.Set(0)
+F.Intrinsic.Control.Next(V.Local.iO)
+
+'have to call this sub again. Because of the way the callwrapper works. We delete all allocations, now we are going back and adding them in.
+'doesn't make sense but thats what we go to do because of how the callwrapper was working with mode P. it wasn't honoring the lot/bin/heat that it came from when removing the alloocation.
+'refresh my lot information
+
+
+F.Intrinsic.Control.If(V.Local.bReAllocate,=,True,"And",V.global.sRunFlag,=,"ORD")
+	F.intrinsic.Control.CallSub(Get_lot)
+	V.Global.bReAll.Set(True)
+	F.Intrinsic.Control.CallSub(Allocate_parts)
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Allocate_Parts_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.Allocate_Parts.End
+
+Program.Sub.Unload.Start
+'close connection
+F.ODBC.Connection!conX.Close
+'close program
+F.Intrinsic.Control.End
+
+
+Program.Sub.Unload.End
+
+Program.Sub.Online_Update.Start
+F.Intrinsic.Control.SetErrorHandler("Online_Update_Err")
+F.Intrinsic.Control.ClearErrors
+
+F.Intrinsic.Debug.SetLA("Coming from Online Update Hook")
+
+V.Local.sError.Declare(String)
+V.Local.sQuery.Declare(String)
+V.Local.iC.Declare(Long)
+
+'first lets delete our records that have been allocated previously
+F.ODBC.Connection!conX.Execute("Delete From GCG_4116_WIPAllocate Where Flag_Allocate = '1'")
+
+
+
+
+
+F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst","Select Distinct Part_Rev,Location From GCG_4116_WIPAllocate Where Flag_Allocate <> '1'")
+'we know we have the parts and allocate qty, then get the lots, then loop through trying to allocate our information, not going to worry about BOM, cause that should of already been handled in the WIP,
+'this table has the parts and qty that we need to allocate to the different orders.
+F.Intrinsic.Control.If(V.ODBC.conX!rst.EOF,<>,True)
+	'set our part udt field reference for the remaining information
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uParts!Part,"Part_Rev")
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uParts!Loc,"Location")
+	F.Intrinsic.Variable.SetUDTFieldReference(V.uGlobal.uParts!BOM_Parent,"Part_Rev")
+	F.Intrinsic.Variable.LoadUDTFromRecordset("conX","rst","v.uGlobal.uParts",False)
+F.Intrinsic.Control.Else
+	F.ODBC.conX!rst.Close
+	F.Intrinsic.Control.CallSub(Unload)
+F.Intrinsic.Control.EndIf
+
+'set this all to one for the qty_needed as these parts are all BOM Parents, or FG parts from GUI
+F.Intrinsic.Variable.UDTSetMemberValue(V.uGlobal.uParts!Qty_Needed,1)
+
+'comment this out fter 5/13/14
+'was determined that they are never cutting work orders for the bom parent that will be the parent line on the order. So this part will actually
+'or should actually either be a member of a bom parent, or it's on the order line by itself.
+'check and see if this part, is a parent, IF IT IS THE BOM COMPS WILL BE ADDED, HOWEVER WE ARE ONLY GOING TO ALLOCATE THOSE BOM COMPS AND NOT THE PARENT IF THE
+'OPTIONS IS BOTH EXPLODED BOM OPTION(adv ORDER ENTRY) IS TURNED ON AND THE PARENT PART IS MARKED FOR B IN CODE_BOM FIELD.
+F.Intrinsic.Control.CallSub(Check_bom)
+
+'call our order infor sub to get some order info that we need to allocate to, cause we are only allocating against this part. or if part is bom then the components
+F.Intrinsic.Control.CallSub(Get_order_info)
+
+'get our lot information
+F.Intrinsic.Control.CallSub(Get_lot)
+
+
+'allocate em.
+F.Intrinsic.Control.CallSub(Allocate_parts)
+
+F.ODBC.Connection!conX.Execute("Update GCG_4116_WIPAllocate Set Flag_Allocate = '1'")
+
+F.Intrinsic.Control.CallSub(Unload)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Online_Update_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Online_Update.End
+
+Program.Sub.Unallocate.Start
+F.Intrinsic.Control.SetErrorHandler("Unallocate_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.fQty.Declare(Float)
+V.Local.sSerial.Declare(String)
+V.Local.sParam.Declare(String)
+V.Local.sSQL.Declare(String)
+V.Local.sPosition.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sRev.Declare(String)
+V.Local.sOrd.Declare(String)
+V.Local.fOrdQty.Declare(Float)
+V.Local.fAllocatedQty.Declare(String)
+
+
+
+
+
+V.Local.fQty.Set(V.Args.Qty)
+V.Local.fOrdQty.Set(V.Args.Qty)
+
+V.Local.sSerial.Set(V.Args.Serial)
+V.Local.sPosition.Set(V.Args.Position)
+F.Intrinsic.String.Split(V.Local.sSerial,"-",V.Local.sOrd)
+F.Intrinsic.String.RPad(V.uGlobal.uParts(v.Local.sPosition)!Part," ",20,V.Local.sParam)
+F.Intrinsic.String.Left(V.local.sParam,17,V.Local.sPart.Trim)
+F.Intrinsic.String.Right(V.Local.sParam,3,V.Local.sRev.Trim)
+
+'F.Intrinsic.String.Build("Select Lot,Bin,Heat,Quantity From V_Item_Master Where Part = '{0}' And Serial_Number = '{1}' And  Allocated = 'Y'",V.uGlobal.uParts(v.Local.sposition)!Part,V.Local.sSerial.Trim,V.Local.sSQL)
+'F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+'F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+'
+
+
+'	V.Local.fAllocatedQty.Set(V.ODBC.conX!rst.FieldValFloat!Quantity)
+'	F.Intrinsic.Control.If(V.Local.fQty,>,0)
+			'BUILD OUR PARAM STRING, 		
+		' Type=R FOR SCREENLESS 1) Part 2) Rev 3) Locn 4) Qty 5) Order 6) Order Line 7) Lot 8) Bin 9) Heat 10) Serial 11)Action(Always P)
+'		F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",V.Local.sPart.Trim,V.Local.sRev.Trim,V.uGlobal.uParts(v.Local.sPosition)!Loc,V.Local.fAllocatedQty,V.Local.sOrd(0),V.Local.sOrd(1),V.ODBC.conX!rst.FieldValTrim!Lot,V.ODBC.conX!rst.FieldValTrim!Bin,V.ODBC.conX!rst.FieldValTrim!Heat,V.Local.sSerial,"P",V.Local.sParam)
+		F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",V.Local.sPart.Trim,V.Local.sRev.Trim,V.uGlobal.uParts(v.Local.sPosition)!Loc,"0",V.Local.sOrd(0),V.Local.sOrd(1),"","","","","D",V.Local.sParam)
+	'	F.Intrinsic.UI.Msgbox(V.Local.sParam)
+	'	F.Intrinsic.Debug.CallWrapperDebugEnable
+		'whether or not we are on GUI online update or Order screen.
+		F.Intrinsic.Debug.SetLA(V.Local.sParam)
+		'F.Intrinsic.Debug.ToggleOutputListing
+		'F.Intrinsic.Debug.DumpVariableList
+	
+		F.Global.General.CallWrapperSync(7101,V.Local.sParam)
+'		F.Intrinsic.Math.Sub(V.Local.fQty,V.Local.fAllocatedQty,V.Local.fQty)
+'	F.Intrinsic.Control.Else
+'		F.Intrinsic.Control.ExitDo
+'	F.Intrinsic.Control.EndIf
+'	F.ODBC.conX!rst.MoveNext
+'F.Intrinsic.Control.Loop
+
+
+'re-allocate back.
+'F.Intrinsic.Control.CallSub(Allocate_parts)
+
+
+
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unallocate_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+F.Intrinsic.UI.Msgbox(V.Local.sError)
+F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.Unallocate.End
+
+Program.Sub.OE_Delete_Run.Start
+F.Intrinsic.Control.SetErrorHandler("OE_Delete_Run_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+V.Local.sFPart.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sRev.Declare(String)
+V.Local.sLoc.Declare(String)
+V.Local.sOrder.Declare(String)
+V.Local.sOrderLine.Declare(String)
+V.Local.sParam.Declare(String)
+V.Local.iUB.Declare(Long)
+V.Local.iC.Declare(Long)
+
+
+
+'store this info into our udt.
+F.Intrinsic.Math.Add(V.uGlobal.uParts.UBound,1,V.Local.iUb)
+F.Intrinsic.Control.If(V.Local.iUb,=,0)
+	V.uGlobal.uParts.Redim(0,0)
+F.Intrinsic.Control.Else
+	V.uGlobal.uParts.RedimPreserve(0,V.Local.iUb)
+F.Intrinsic.Control.EndIf
+'SET PART/rev combo
+F.Intrinsic.String.GSSPartString(V.Passed.000071,V.Passed.000072,V.Local.sFPart)
+V.Local.sPart.Set(V.Passed.000071)
+V.Local.sRev.Set(V.Passed.000072)
+'if there is a location
+V.Local.sLoc.Set(V.Passed.000074)
+V.Local.sOrder.Set(V.Passed.000005)
+F.Intrinsic.String.LPad(V.Local.sOrder,"0",7,V.Local.sOrder)
+V.Local.sOrderLine.Set(V.Passed.000013)
+F.Intrinsic.String.LPad(V.Local.sOrderLine,"0",3,V.Local.sOrderLine)
+V.uGlobal.uParts(v.Local.iUb)!Part.Set(V.Local.sFPart.Trim)
+V.uGlobal.uParts(v.Local.iUb)!Loc.Set(V.Local.sLoc.Trim)
+V.uGlobal.uParts(v.Local.iUb)!Qty_Needed.Set("0")
+
+'check bom
+F.Intrinsic.Control.CallSub(Check_bom)
+'
+'
+
+
+'not going to format the order line just yet, as on reference we have to look at it with multiples of 10
+'so order line 1 is actually listed as 0010 (
+'one other way is just padded to 001 (Allocation)
+'F.Intrinsic.string.Lpad(V.Local.sOrder,"0",7,V.Local.sORder)
+'F.Intrinsic.string.Lpad(V.Local.sOrderLine.float,"0",3,V.Local.sOrderLine)
+'F.Intrinsic.String.Concat(V.Local.sOrderLine,"0",V.Local.sOrderLine)
+'V.Local.fOrderQty.Set(V.Passed.000001)
+
+'F.Intrinsic.String.Build("Select Lot,Bin,Heat From V_Item_Master Where Part = '{0}' And Serial_Number = '{1}' And  Allocated = 'Y'",V.uGlobal.uParts(v.Local.sposition)!Part,V.Local.sSerial.Trim,V.Local.sSQL)
+'F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+'F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+	'BUILD OUR PARAM STRING, 	
+F.Intrinsic.Control.For(V.Local.iC,V.uGlobal.uParts.LBound,V.uGlobal.uParts.UBound,1)
+
+	F.Intrinsic.Debug.SetLA("Deleting Allocation for Part:  ",V.Local.sPart)
+	V.Local.sFPart.Set(V.uGlobal.uParts(v.Local.iC)!Part)
+	F.Intrinsic.String.RPad(V.Local.sFPart," ",20,V.Local.sFPart)
+	F.Intrinsic.String.left(V.Local.sFPart,17,V.Local.sPart)
+	F.Intrinsic.String.Right(V.Local.sFPart,3,V.Local.sRev)
+	'if there is a location
+	V.Local.sLoc.Set(V.uGlobal.uParts(v.Local.iC)!Loc)
+'	V.Local.sOrder.Set(V.Passed.000005)
+'	F.Intrinsic.String.LPad(V.Local.sOrder,"0",7,V.Local.sOrder)
+'	V.Local.sOrderLine.Set(V.Passed.000013)
+'	V.uGlobal.uParts(v.Local.iUb)!Part.Set(V.Local.sFPart.Trim)
+'	V.uGlobal.uParts(v.Local.iUb)!Loc.Set(V.Local.sLoc.Trim)
+'	V.uGlobal.uParts(v.Local.iUb)!Qty_Needed.Set("0")
+
+	' Type=R FOR SCREENLESS 1) Part 2) Rev 3) Locn 4) Qty 5) Order 6) Order Line 7) Lot 8) Bin 9) Heat 10) Serial 11)Action(Always P)
+'	F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",V.Local.sPart.Trim,V.Local.sRev.Trim,V.uGlobal.uParts(v.Local.sPosition)!Loc,V.Local.fQty,V.Local.sOrd(0),V.Local.sOrd(1),V.ODBC.conX!rst.FieldValTrim!Lot,V.ODBC.conX!rst.FieldValTrim!Bin,V.ODBC.conX!rst.FieldValTrim!Heat,V.Local.sSerial,V.local.sAction,V.Local.sParam)
+	F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",V.Local.sPart,V.Local.sRev,V.Local.sLoc,"0",V.Local.sOrder,V.Local.sOrderLine,"","","","","D",V.Local.sParam)
+'	F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",v.Local.sPart,V.Local.sRev.Trim,V.Local.sLoc.Trim,"0",V.Local.sOrder,V.Local.sOrderLine,"","","","","D",V.Local.sParam)
+	
+'	F.Intrinsic.UI.Msgbox(V.Local.sParam)
+'	F.Intrinsic.Debug.CallWrapperDebugEnable
+	'whether or not we are on GUI online update or Order screen.
+	F.Intrinsic.Debug.SetLA(V.Local.sParam)
+	'F.Intrinsic.Debug.ToggleOutputListing
+	'F.Intrinsic.Debug.DumpVariableList
+	F.Global.General.CallWrapperSync(7101,V.Local.sParam)
+'	F.ODBC.conX!rst.MoveNext
+F.Intrinsic.Control.Next(V.Local.iC)
+
+
+'delete action.
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("OE_Delete_Run_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.OE_Delete_Run.End
+
+Program.Sub.OE_Header_Delete.Start
+F.Intrinsic.Control.SetErrorHandler("OE_Header_Delete_Err")
+F.Intrinsic.Control.ClearErrors
+
+'hit the delete button on the order header.
+'remove all allocations
+
+V.Local.sError.Declare(String)
+V.Local.sSQL.Declare(String)
+V.Local.sOrd.Declare(String)
+V.Local.sOrderLine.Declare(String)
+V.Local.sParam.Declare(String)
+V.Local.sFPart.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sRev.Declare(String)
+V.Local.sLoc.Declare(String)
+
+'grab order number
+V.Local.sOrd.Set(V.Passed.000003)
+F.Intrinsic.UI.InvokeWaitDialog("Removing all allocations from Order")
+F.Intrinsic.String.LPad(V.Local.sOrd,"0",7,V.Local.sOrd)
+
+'f.Intrinsic.String.Build("Select Part,Location, Left(Record_No,3) As Ord_Line From V_Order_Lines Where Order_No = '{0}'",v.local.sOrd,v.Local.sSQL)
+F.Intrinsic.String.Build("Select Part,Location, Serial_Number From V_Item_Master Where Left(Serial_Number,7) = '{0}' And Allocated = 'Y'",V.local.sOrd,V.Local.sSQL)
+
+
+
+
+
+F.ODBC.Connection!conX.OpenLocalRecordsetRO("rst",V.Local.sSQL)
+F.Intrinsic.Control.DoUntil(V.ODBC.conX!rst.EOF,=,True)
+	F.Intrinsic.String.RPad(V.ODBC.conX!rst.FieldValTrim!Part," ",20,V.Local.sFPart)
+	F.Intrinsic.String.Left(V.Local.sFPart,17,V.Local.sPart)
+	F.Intrinsic.String.Right(V.Local.sFPart,3,V.Local.sRev)
+	V.Local.sLoc.set(V.ODBC.conX!rst.FieldValTrim!Location)
+	
+
+
+	F.Intrinsic.String.Split(V.ODBC.conX!rst.FieldValTrim!Serial_Number,"-",V.local.sOrderLine)
+	V.Local.sOrderLine.Set(V.Local.sOrderLine(1))
+	F.Intrinsic.Debug.SetLA("Deleting Allocation for Part:  ",V.Local.sFPart,"Order: ",V.Local.sOrd,"    Line :   ",V.Local.sOrderLine)
+	F.Intrinsic.String.Build("R!*!{0}!*!{1}!*!{2}!*!{3}!*!{4}!*!{5}!*!{6}!*!{7}!*!{8}!*!{9}!*!{10}",V.Local.sPart,V.Local.sRev,V.Local.sLoc,"0",V.Local.sOrd,V.Local.sOrderLine,"","","","","D",V.Local.sParam)
+	F.Intrinsic.Debug.SetLA(V.Local.sParam)
+	F.Global.General.CallWrapperSync(7101,V.Local.sParam)
+	F.ODBC.conX!rst.MoveNext
+F.Intrinsic.Control.Loop
+F.ODBC.conX!rst.Close
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("OE_Header_Delete_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4116_Auto_Allocate_SO_Line.gas",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.CallSub(Unload)
+Function.Intrinsic.Control.EndIf
+
+
+Program.Sub.OE_Header_Delete.End
+
+Program.Sub.Comments.Start
+${$0$}$GCG_4116_Auto_Allocate_SO_Line$}$RLK$}$9/22/2014
+${$1$}$$}$$}$4$}$11880$}$OES0200A-DELETE-BTN-HOOK$}$6/1/2016 2:56:52 PM$}$(Program: ORD200; Screen: OES0200A)
+
+${$1$}$$}$$}$3$}$38130$}$Post-On-Line Update$}$6/1/2016 2:56:19 PM$}$(Program: JB032A; Screen: JBS032A)
+
+${$1$}$$}$$}$2$}$15880$}$OLS003-PB-PROCESS-PRE-HOOK (On-line GUI)$}$6/1/2016 2:56:04 PM$}$(Program: OLG002; Screen: OLS003)
+
+${$1$}$$}$$}$1$}$12522$}$OES0201F-POST-DELETE-HOOK$}$6/1/2016 2:55:45 PM$}$(Program: ORD201; Screen: OES0201F)
+
+${$1$}$$}$$}$0$}$12511$}$OES0201F-POST-SAVE-HOOK$}$6/1/2016 2:55:22 PM$}$(Program: ORD201; Screen: OES0201F)
+
+Program.Sub.Comments.End
+
